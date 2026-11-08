@@ -662,3 +662,36 @@ fn http_fetch_small_response_is_byte_identical() {
     assert_eq!(body, b"hello");
     server.join().unwrap();
 }
+
+#[test]
+fn a_late_request_is_read_even_though_the_listener_is_nonblocking() {
+    // `serve_loop` polls a nonblocking listener; on macOS an accepted connection inherits that mode
+    // unless it is reset, and a read that finds no data yet then looks like a timeout.
+    let tmp = tempfile::tempdir().unwrap();
+    let snap = make_source_snapshot(tmp.path(), 1);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = ServeConfig::new(TEST_TOKEN, SERVE_HOST);
+    let server = std::thread::spawn(move || loop {
+        match serve_once(&listener, &snap, &config, &mut |_| {}) {
+            Err(TransportError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => break,
+        }
+    });
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let request = format!(
+        "GET /manifest.json HTTP/1.1\r\nHost: {SERVE_HOST}\r\nAuthorization: Bearer wrong\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    server.join().unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "a late request must still be read and answered, got: {response:?}"
+    );
+}

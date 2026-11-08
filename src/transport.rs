@@ -679,6 +679,9 @@ pub fn serve_once(
     log: &mut dyn FnMut(&str),
 ) -> Result<()> {
     let (mut stream, _) = listener.accept()?;
+    // A listener polled in nonblocking mode (`serve_loop`) hands out connections that inherit that
+    // mode on BSD and macOS but not on Linux. Reads and writes here rely on timeouts, not on polling.
+    stream.set_nonblocking(false)?;
     let deadline = Instant::now() + config.request_timeout;
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
