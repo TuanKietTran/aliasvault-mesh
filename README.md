@@ -64,7 +64,7 @@ Placeholder values only — replace every placeholder with your own before use.
    avmesh snapshot verify --snapshot ./node-b/staging
    ```
 
-   The commands above are the loopback form proven by the drill. On a real tailnet the standby reaches the primary's loopback endpoint through Tailscale Serve; see `docs/runbooks/setup.md`.
+   The commands above are the loopback form proven by the drill. Across two machines the client still dials loopback only (the token travels over plain HTTP and must never leave the machine), so forward the primary's port to the standby's loopback first, for example `ssh -N -L 18100:127.0.0.1:18100 user@node-a`, and pull from `http://127.0.0.1:18100`. Dialing a Tailscale Serve name directly over HTTPS is not implemented yet. See `docs/runbooks/setup.md`.
 
 Procedures in the runbooks that are not part of this flow are drafts until marked verified: the runbooks say so per command.
 
