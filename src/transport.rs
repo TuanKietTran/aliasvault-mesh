@@ -256,6 +256,11 @@ fn safe_relative(rel: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// The loopback addresses among `addrs`, in their original order.
+fn loopback_only(addrs: impl Iterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    addrs.filter(|a| a.ip().is_loopback()).collect()
+}
+
 /// A source of snapshot files. Implementations only fetch bytes;
 /// verification, identity binding and staging live in
 /// `pull_snapshot` so every transport gets them.
@@ -519,15 +524,19 @@ impl Transport for HttpTransport {
                 .checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero())
         };
-        let addr: SocketAddr = match self.host.parse::<std::net::IpAddr>() {
-            Ok(ip) => SocketAddr::new(ip, self.port),
-            Err(_) => (self.host.as_str(), self.port)
-                .to_socket_addrs()?
-                .next()
-                .ok_or_else(|| {
-                    TransportError::Http(format!("cannot resolve base url host: {}", self.host))
-                })?,
+        // A literal address is used as is. A name (`localhost`) can resolve to several addresses, for
+        // example `::1` before `127.0.0.1`: keep only loopback ones so a resolver can never send the
+        // token off-machine, and try them in order.
+        let addrs: Vec<SocketAddr> = match self.host.parse::<std::net::IpAddr>() {
+            Ok(ip) => vec![SocketAddr::new(ip, self.port)],
+            Err(_) => loopback_only((self.host.as_str(), self.port).to_socket_addrs()?),
         };
+        if addrs.is_empty() {
+            return Err(TransportError::Http(format!(
+                "cannot resolve base url host to a loopback address: {}",
+                self.host
+            )));
+        }
         let connect_budget = self
             .connect_timeout
             .min(remaining(deadline).ok_or_else(|| {
@@ -537,7 +546,25 @@ impl Transport for HttpTransport {
                 ))
             })?)
             .max(Duration::from_millis(1));
-        let mut stream = TcpStream::connect_timeout(&addr, connect_budget)?;
+        let mut last_error = None;
+        let mut connected = None;
+        for addr in &addrs {
+            match TcpStream::connect_timeout(addr, connect_budget) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+        let mut stream = match connected {
+            Some(stream) => stream,
+            None => {
+                return Err(TransportError::Io(last_error.unwrap_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "no address to connect to")
+                })))
+            }
+        };
         let host_header = match &self.serve_host {
             Some(name) => name.clone(),
             None if self.host.contains(':') => format!("[{}]:{}", self.host, self.port),
@@ -627,6 +654,9 @@ impl Transport for HttpTransport {
         match status {
             200 => Ok(response[split + 4..].to_vec()),
             404 => Err(TransportError::NotFound(rel.to_string())),
+            421 => Err(TransportError::Http(format!(
+                "unexpected status 421 for {rel}: the serving node expects a different Host name; pass it with --serve-host NAME"
+            ))),
             other => Err(TransportError::Http(format!(
                 "unexpected status {other} for {rel}"
             ))),
@@ -811,4 +841,36 @@ fn respond(stream: &mut TcpStream, status: u32, text: &str, body: &[u8]) -> Resu
     stream.write_all(body)?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod loopback_filter_tests {
+    use super::loopback_only;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn only_loopback_addresses_survive_in_their_original_order() {
+        let given: Vec<SocketAddr> = [
+            "[::1]:1",
+            "8.8.8.8:1",
+            "127.0.0.1:1",
+            "10.0.0.5:1",
+            "[2001:db8::1]:1",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        let kept = loopback_only(given.into_iter());
+        let kept: Vec<String> = kept.iter().map(|a| a.to_string()).collect();
+        assert_eq!(kept, ["[::1]:1", "127.0.0.1:1"]);
+    }
+
+    #[test]
+    fn a_name_that_resolves_only_off_machine_leaves_nothing_to_dial() {
+        let given: Vec<SocketAddr> = ["8.8.8.8:1", "[2001:db8::1]:1"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        assert!(loopback_only(given.into_iter()).is_empty());
+    }
 }
