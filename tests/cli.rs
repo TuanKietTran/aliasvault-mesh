@@ -532,3 +532,85 @@ fn serve_loop_stops_when_flag_is_set() {
     stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
 }
+
+#[test]
+fn pull_fetches_a_served_snapshot_and_refuses_a_wrong_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a_home = tmp.path().join("a");
+    let src = write_sources(tmp.path());
+    let snap = cli_create(&a_home, &src, 1_700_000_000, 3);
+    stage(&a_home, &snap);
+    let (code, out) = cli_promote(&a_home, true);
+    assert_eq!(code, EXIT_OK, "{out}");
+    let a_store = SnapshotStore::new(a_home.join("store"));
+    let node_id = a_store.current_manifest(&mut |_: &str| {}).unwrap().node_id;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let current = a_store.current_dir();
+    let config = ServeConfig::new("pull-test-token", "127.0.0.1");
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_in_thread = Arc::clone(&stop);
+    let server = std::thread::spawn(move || {
+        serve_loop(listener, &current, &config, &stop_in_thread, &mut |_| {});
+    });
+
+    let from = format!("http://127.0.0.1:{port}");
+    let good = tmp.path().join("good.token");
+    fs::write(&good, "pull-test-token\n").unwrap();
+    let b_store = tmp.path().join("b");
+    let mut args = a(&["pull"]);
+    flag(&mut args, "--data-dir", &b_store);
+    flag_str(&mut args, "--from", &from);
+    flag_str(&mut args, "--allow", &node_id);
+    flag(&mut args, "--token-file", &good);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "pull failed: {out}");
+    assert!(out.contains("pulled snapshot from node"), "{out}");
+    assert!(
+        !out.contains("pull-test-token"),
+        "output leaked the token: {out}"
+    );
+    let (code, out) = cli_verify(&b_store.join("staging"));
+    assert_eq!(code, EXIT_OK, "staged snapshot does not verify: {out}");
+
+    let bad = tmp.path().join("bad.token");
+    fs::write(&bad, "not-the-token\n").unwrap();
+    let b_wrong = tmp.path().join("b-wrong");
+    let mut args = a(&["pull"]);
+    flag(&mut args, "--data-dir", &b_wrong);
+    flag_str(&mut args, "--from", &from);
+    flag_str(&mut args, "--allow", &node_id);
+    flag(&mut args, "--token-file", &bad);
+    let (code, out) = cli(&args, None);
+    assert_eq!(
+        code, EXIT_UNAVAILABLE,
+        "a wrong token must be refused: {out}"
+    );
+    assert!(out.contains("401"), "{out}");
+    assert!(!b_wrong.join("staging").exists());
+
+    stop.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+}
+
+#[test]
+fn pull_needs_from_and_exactly_one_allow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut args = a(&["pull"]);
+    flag(&mut args, "--data-dir", tmp.path());
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE, "{out}");
+    flag_str(&mut args, "--from", "http://127.0.0.1:1");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE, "{out}");
+    assert!(out.contains("--allow"), "{out}");
+    // A non-loopback source is refused before any token is read or sent.
+    let mut args = a(&["pull"]);
+    flag(&mut args, "--data-dir", tmp.path());
+    flag_str(&mut args, "--from", "http://192.168.1.10:18080");
+    flag_str(&mut args, "--allow", "node-a");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE, "{out}");
+    assert!(out.contains("not loopback"), "{out}");
+}

@@ -1,7 +1,7 @@
 //! The `avmesh` command line.
 //!
 //! Commands: `status`, `snapshot create|verify|list`, `promote`,
-//! `demote`, `token init`, `serve`. The module is written against the `PeerSource` trait and
+//! `demote`, `token init`, `serve`, `pull`. The module is written against the `PeerSource` trait and
 //! an output sink so tests can assert the exact CLI output with a fake
 //! peer source and temp directories — no tailnet, no real data.
 //!
@@ -19,7 +19,9 @@ use crate::manifest::{BucketState, SnapshotManifest, VaultState};
 use crate::snapshot::{
     create_snapshot_with_node_local, fingerprint, verify_snapshot, SnapshotSources, SnapshotStore,
 };
-use crate::transport::{init_token, load_token, serve_once, ServeConfig, TransportError};
+use crate::transport::{
+    init_token, load_token, pull_snapshot, serve_once, HttpTransport, ServeConfig, TransportError,
+};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
@@ -618,7 +620,114 @@ fn cmd_serve(flags: &Flags, out: &mut dyn Write) -> i32 {
     EXIT_OK
 }
 
-const USAGE: &str = "usage: avmesh <status|snapshot|promote|demote|token|serve> [flags]\n  status [--status-json FILE] [--allow KEY]... [--tailnet NAME]\n  snapshot create --data-dir D --db-export F --secrets-dir D --env-file F [--node-id KEY] [--vault ID] [--revision N] [--ciphertext-hash H] [--bucket ID:REV:HASH]... [--node-local-secret NAME]... [--at UNIX]\n  snapshot verify --snapshot DIR\n  snapshot list --data-dir D\n  promote --data-dir D --confirm-primary-down\n  demote --data-dir D\n  token init --data-dir D\n  serve --data-dir D [--listen 127.0.0.1:PORT] [--allow KEY]...";
+/// Host part of a plain-http base URL, brackets removed: the name the
+/// serving side expects in the Host header unless `--serve-host` says otherwise.
+fn base_url_host(base: &str) -> Option<String> {
+    let rest = base.strip_prefix("http://")?;
+    let hostport = rest.split('/').next()?;
+    let (host, _port) = hostport.rsplit_once(':')?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// Fetch the serving node's current snapshot, verify it and stage it
+/// under `--data-dir` (not promoted). The serving node is named by
+/// `--allow` (its public key); the manifest must carry that key. The
+/// token comes from `--token-file` or the data directory's own token
+/// file, never from argv, and is never printed.
+fn cmd_pull(flags: &Flags, out: &mut dyn Write) -> i32 {
+    let Some(data_dir) = require_data_dir(flags, out) else {
+        return EXIT_USAGE;
+    };
+    let Some(from) = flags.get("from") else {
+        let _ = writeln!(out, "error: --from http://127.0.0.1:PORT is required");
+        return EXIT_USAGE;
+    };
+    let allow = flags.get_all("allow");
+    let [peer_key] = allow.as_slice() else {
+        let _ = writeln!(
+            out,
+            "error: exactly one --allow KEY (the serving node's public key) is required"
+        );
+        return EXIT_USAGE;
+    };
+    let transport = match HttpTransport::from_base_url(from) {
+        Ok(transport) => transport,
+        Err(e) => {
+            let _ = writeln!(out, "error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let serve_host = match flags.get("serve-host") {
+        Some(host) => host.to_string(),
+        None => match base_url_host(from) {
+            Some(host) => host,
+            None => {
+                let _ = writeln!(out, "error: cannot read a host from --from {from}");
+                return EXIT_USAGE;
+            }
+        },
+    };
+    let token = match flags.get("token-file") {
+        Some(file) => match fs::read_to_string(file) {
+            Ok(text) if !text.trim().is_empty() => text.trim().to_string(),
+            Ok(_) => {
+                let _ = writeln!(out, "error: token file {file} is empty");
+                return EXIT_UNAVAILABLE;
+            }
+            Err(e) => {
+                let _ = writeln!(out, "error: cannot read token file {file}: {e}");
+                return EXIT_UNAVAILABLE;
+            }
+        },
+        None => match load_token(&data_dir) {
+            Ok(token) => token,
+            Err(e) => {
+                let _ = writeln!(out, "error: {e}");
+                return EXIT_UNAVAILABLE;
+            }
+        },
+    };
+    let transport = transport.with_auth(token, serve_host);
+    let peer = PeerRecord {
+        public_key: peer_key.to_string(),
+        id: None,
+        host_name: None,
+        dns_name: None,
+        tailscale_ips: Vec::new(),
+        tags: Vec::new(),
+        state: PeerState::Online,
+        last_seen: None,
+    };
+    let store = SnapshotStore::new(&data_dir);
+    let mut lines: Vec<String> = Vec::new();
+    let mut log = |line: &str| lines.push(line.to_string());
+    let result = pull_snapshot(&transport, &peer, &store, &mut log);
+    for line in &lines {
+        let _ = writeln!(out, "{line}");
+    }
+    match result {
+        Ok(manifest) => {
+            let _ = writeln!(
+                out,
+                "pulled snapshot from node {} ({} vaults) into {}",
+                manifest.node_id,
+                manifest.vaults.len(),
+                store.staging_dir().display()
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            let _ = writeln!(out, "error: {e}");
+            EXIT_UNAVAILABLE
+        }
+    }
+}
+
+const USAGE: &str = "usage: avmesh <status|snapshot|promote|demote|token|serve|pull> [flags]\n  status [--status-json FILE] [--allow KEY]... [--tailnet NAME]\n  snapshot create --data-dir D --db-export F --secrets-dir D --env-file F [--node-id KEY] [--vault ID] [--revision N] [--ciphertext-hash H] [--bucket ID:REV:HASH]... [--node-local-secret NAME]... [--at UNIX]\n  snapshot verify --snapshot DIR\n  snapshot list --data-dir D\n  promote --data-dir D --confirm-primary-down\n  demote --data-dir D\n  token init --data-dir D\n  serve --data-dir D [--listen 127.0.0.1:PORT] [--allow KEY]...\n  pull --data-dir D --from http://127.0.0.1:PORT --allow KEY [--token-file F] [--serve-host H]";
 
 /// Run the CLI with the production peer source. Returns an exit code.
 pub fn run(args: &[String], out: &mut dyn Write) -> i32 {
@@ -685,6 +794,13 @@ pub fn run_with_source(
         },
         "serve" => match parse_flags(&args[1..]) {
             Ok(flags) => cmd_serve(&flags, out),
+            Err(e) => {
+                let _ = writeln!(out, "error: {e}");
+                EXIT_USAGE
+            }
+        },
+        "pull" => match parse_flags(&args[1..]) {
+            Ok(flags) => cmd_pull(&flags, out),
             Err(e) => {
                 let _ = writeln!(out, "error: {e}");
                 EXIT_USAGE
