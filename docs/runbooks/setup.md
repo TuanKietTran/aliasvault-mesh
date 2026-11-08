@@ -70,7 +70,7 @@ Set up a two-node deployment: `node-a` as primary, `node-b` as standby. All valu
    avmesh snapshot verify --snapshot ./node-b/staging   # VERIFIED
    ```
 
-   The loopback `--from` form above is the drill-proven form. The client dials loopback only, so across two machines forward the primary's port to the standby's loopback first, for example `ssh -N -L 18100:127.0.0.1:18100 user@node-a` (UNVERIFIED across real machines), and keep `--from http://127.0.0.1:18100`. Dialing a Tailscale Serve name directly over HTTPS is not implemented; `--serve-host` only sets the Host name the primary expects. Starting the standby's AliasVault on the pulled snapshot (the standby start test) is not part of the verified flow yet: UNVERIFIED.
+   The loopback `--from` form above is the drill-proven form. The client dials loopback only, so across two machines forward the primary's port to the standby's loopback first, for example `ssh -N -L 18100:127.0.0.1:18100 user@node-a` (VERIFIED across two real machines, see `docs/drills/cross-machine.txt`), and keep `--from http://127.0.0.1:18100`. Dialing a Tailscale Serve name directly over HTTPS is not implemented; `--serve-host` only sets the Host name the primary expects. Starting the standby's AliasVault on the pulled snapshot (the standby start test) is not part of the verified flow yet: UNVERIFIED.
 
 ## Verification
 

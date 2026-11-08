@@ -1,0 +1,45 @@
+Cross-machine serve/pull trial - full run, two real machines
+
+node-a (primary): Windows 10 host. The static x86-64 Linux avmesh binary ran inside the Rancher Desktop
+                  WSL2 distro. A throwaway AliasVault all-in-one instance (image already present, new
+                  data only) provided the database and secrets. Loopback ports only: 18200 (instance),
+                  18100 (serve).
+node-b (standby): macOS, debug build of avmesh.
+link:             ssh -N -L 18150:127.0.0.1:18100 <user>@node-a   (no tailscale or firewall change)
+
+== node-a: instance, export, snapshot, serve
+instance answered http 200; public tables in the database: 39
+database export: 82,799 bytes; secret files exported: data_protection_cert_pass, jwt_key
+  (postgres_password stays node-local and is not part of the snapshot)
+snapshot: created and verified (4 payload files); promoted: vaults=v1@r1
+serve: running, listening on 127.0.0.1:18100
+
+== link
+unauthenticated request through the tunnel: http 401
+token copied to node-b out of band (scp), mode 600; the staging copy on node-a was deleted at once
+
+== node-b: pull (right token)
+transport: fetched payload/database/dump.sql (82799 bytes)
+transport: fetched payload/environment/instance.env (67 bytes)
+transport: fetched payload/secrets/data_protection_cert_pass (44 bytes)
+transport: fetched payload/secrets/jwt_key (44 bytes)
+snapshot: verified 4 payload files
+snapshot: staged and verified
+pulled snapshot from node node-a-key (1 vaults)    [node key shown as a placeholder name]
+exit 0; avmesh snapshot verify on node-b: vault v1 revision 1, snapshot ok
+
+== payload comparison (first 16 hex of sha256, size)
+f9e32e1734bc95ff 82799  database/dump.sql           node-a == node-b
+2ed4ae668f6add37    67  environment/instance.env    node-a == node-b
+ddd8661482c68bc6    44  secrets/data_protection_cert_pass  node-a == node-b
+9c60b034cf0ac163    44  secrets/jwt_key             node-a == node-b
+
+== negative controls over the same link
+wrong token:            error: http transport error: unexpected status 401 for manifest.json   exit 2, nothing staged
+wrong expected node key: error: manifest node_id ... does not match allowlisted peer key ...    exit 2, nothing staged
+token text in any output: 0 occurrences
+
+== teardown (both machines)
+serve stopped; throwaway container removed; instance data removed; trial folder removed
+no listener on 18100/18200; no leftover containers, volumes or directories; the existing AliasVault
+deployment on node-a was not touched and kept running
