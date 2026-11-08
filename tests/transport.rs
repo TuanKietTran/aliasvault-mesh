@@ -695,3 +695,30 @@ fn a_late_request_is_read_even_though_the_listener_is_nonblocking() {
         "a late request must still be read and answered, got: {response:?}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_inside_the_snapshot_is_never_served() {
+    let tmp = tempfile::tempdir().unwrap();
+    let snap = make_source_snapshot(tmp.path(), 1);
+    let outside = tmp.path().join("outside-secret.txt");
+    fs::write(&outside, "outside marker").unwrap();
+    std::os::unix::fs::symlink(&outside, snap.join("payload").join("link.txt")).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let config = ServeConfig::new(TEST_TOKEN, SERVE_HOST);
+    let server = std::thread::spawn(move || serve_once(&listener, &snap, &config, &mut |_| {}));
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "GET /payload/link.txt HTTP/1.1\r\nHost: {SERVE_HOST}\r\nAuthorization: Bearer {TEST_TOKEN}\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    server.join().unwrap().unwrap();
+    assert!(response.starts_with("HTTP/1.1 404"), "got: {response:?}");
+    assert!(
+        !response.contains("outside marker"),
+        "a linked file was served"
+    );
+}

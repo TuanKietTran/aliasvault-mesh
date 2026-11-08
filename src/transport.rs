@@ -770,6 +770,11 @@ pub fn serve_once(
             return respond(&mut stream, 400, "Bad Request", b"bad request\n");
         }
     };
+    if path_goes_through_symlink(snapshot_dir, &rel_path) {
+        // A link inside a snapshot could point anywhere on this machine; never follow it for a peer.
+        log("transport: rejected request (404, link)");
+        return respond(&mut stream, 404, "Not Found", b"not found\n");
+    }
     match fs::read(snapshot_dir.join(rel_path)) {
         Ok(bytes) => {
             log(&format!("transport: served {rel} ({} bytes)", bytes.len()));
@@ -780,6 +785,21 @@ pub fn serve_once(
         }
         Err(e) => Err(TransportError::Io(e)),
     }
+}
+
+/// True when any existing component of `root/rel` is a symbolic link. A missing component is not a
+/// link: the read that follows answers "not found".
+fn path_goes_through_symlink(root: &Path, rel: &Path) -> bool {
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn respond(stream: &mut TcpStream, status: u32, text: &str, body: &[u8]) -> Result<()> {
