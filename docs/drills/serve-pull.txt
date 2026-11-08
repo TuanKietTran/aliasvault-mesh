@@ -1,10 +1,10 @@
 Two-instance serve/pull drill - full run
-command: AVMESH_BIN=/tmp/integ-main-build/debug/avmesh bash harness/two-instance-drill.sh
+command: AVMESH_BIN=target/debug/avmesh bash harness/two-instance-drill.sh
 
 == preflight
 ports chosen: 18100 18101 (second port reserved and checked)
 == build
-binary: /tmp/integ-main-build/debug/avmesh
+binary: target/debug/avmesh
 work area: <tmpdir>
 == fixtures
 == instance A: token, snapshot, promote
@@ -53,7 +53,7 @@ drill result: ok
 exit code: 0
 
 Refusal behaviour - a chosen port is already in use
-command: AVMESH_PORT_A=18222 AVMESH_PORT_B=18223 AVMESH_BIN=/tmp/integ-main-build/debug/avmesh bash harness/two-instance-drill.sh
+command: AVMESH_PORT_A=18222 AVMESH_PORT_B=18223 AVMESH_BIN=target/debug/avmesh bash harness/two-instance-drill.sh
 
 == preflight
 error: port 18222 is already in use; refusing to run
