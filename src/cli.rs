@@ -1,7 +1,7 @@
 //! The `avmesh` command line.
 //!
 //! Commands: `status`, `snapshot create|verify|list`, `promote`,
-//! `demote`. The module is written against the `PeerSource` trait and
+//! `demote`, `token init`, `serve`. The module is written against the `PeerSource` trait and
 //! an output sink so tests can assert the exact CLI output with a fake
 //! peer source and temp directories — no tailnet, no real data.
 //!
@@ -19,11 +19,14 @@ use crate::manifest::{BucketState, SnapshotManifest, VaultState};
 use crate::snapshot::{
     create_snapshot_with_node_local, fingerprint, verify_snapshot, SnapshotSources, SnapshotStore,
 };
-use crate::transport::init_token;
+use crate::transport::{init_token, load_token, serve_once, ServeConfig, TransportError};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_USAGE: i32 = 1;
@@ -498,7 +501,124 @@ fn cmd_token_init(flags: &Flags, out: &mut dyn Write) -> i32 {
     }
 }
 
-const USAGE: &str = "usage: avmesh <status|snapshot|promote|demote|token> [flags]\n  status [--status-json FILE] [--allow KEY]... [--tailnet NAME]\n  snapshot create --data-dir D --db-export F --secrets-dir D --env-file F [--node-id KEY] [--vault ID] [--revision N] [--ciphertext-hash H] [--bucket ID:REV:HASH]... [--node-local-secret NAME]... [--at UNIX]\n  snapshot verify --snapshot DIR\n  snapshot list --data-dir D\n  promote --data-dir D --confirm-primary-down\n  demote --data-dir D\n  token init --data-dir D";
+/// Parse a `--listen` value into (host, bind address). Only the
+/// loopback hosts accepted by the HTTP transport are allowed:
+/// 127.0.0.1, ::1 (bracketed or not) and localhost, each with a
+/// numeric port.
+fn parse_listen(listen: &str) -> Option<(String, String)> {
+    let (host, port) = if let Some(rest) = listen.strip_prefix('[') {
+        let (host, rest) = rest.split_once(']')?;
+        (host, rest.strip_prefix(':')?)
+    } else {
+        listen.rsplit_once(':')?
+    };
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if !matches!(host, "127.0.0.1" | "::1" | "localhost") {
+        return None;
+    }
+    let bind = if host == "::1" {
+        format!("[::1]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    Some((host.to_string(), bind))
+}
+
+/// Serve `snapshot_dir` on `listener` until `stop` is set. The
+/// listener runs in nonblocking mode: an idle poll sleeps briefly
+/// and re-checks the flag. A failed request is reported through
+/// `log` and does not end the loop; log lines never carry the
+/// token or any header value.
+pub fn serve_loop(
+    listener: TcpListener,
+    snapshot_dir: &Path,
+    config: &ServeConfig,
+    stop: &AtomicBool,
+    log: &mut dyn FnMut(&str),
+) {
+    let _ = listener.set_nonblocking(true);
+    while !stop.load(Ordering::SeqCst) {
+        match serve_once(&listener, snapshot_dir, config, log) {
+            Ok(()) => {}
+            Err(TransportError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                log(&format!("error: {e}"));
+            }
+        }
+    }
+}
+
+fn cmd_serve(flags: &Flags, out: &mut dyn Write) -> i32 {
+    let Some(data_dir) = require_data_dir(flags, out) else {
+        return EXIT_USAGE;
+    };
+    let listen = flags.get("listen").unwrap_or("127.0.0.1:18080");
+    let Some((host, bind)) = parse_listen(listen) else {
+        let _ = writeln!(
+            out,
+            "error: --listen must be a loopback address (127.0.0.1, ::1 or localhost) with a port: {listen}"
+        );
+        return EXIT_USAGE;
+    };
+    let store = SnapshotStore::new(&data_dir);
+    let mut lines: Vec<String> = Vec::new();
+    let mut log = |line: &str| lines.push(line.to_string());
+    let manifest = match store.current_manifest(&mut log) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            let _ = writeln!(out, "error: {e}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    for line in &lines {
+        let _ = writeln!(out, "{line}");
+    }
+    let token = match load_token(&data_dir) {
+        Ok(token) => token,
+        Err(e) => {
+            let _ = writeln!(out, "error: {e}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    let allow = flags.get_all("allow");
+    if !allow.is_empty() && !allow.contains(&manifest.node_id.as_str()) {
+        let _ = writeln!(
+            out,
+            "error: current snapshot node {} is not in --allow",
+            manifest.node_id
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    let listener = match TcpListener::bind(&bind) {
+        Ok(listener) => listener,
+        Err(e) => {
+            let _ = writeln!(out, "error: {e}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    if let Ok(addr) = listener.local_addr() {
+        let _ = writeln!(out, "serving current snapshot at {addr}");
+    }
+    let config = ServeConfig::new(token, host);
+    let stop = AtomicBool::new(false);
+    let mut serve_log = |line: &str| {
+        let _ = writeln!(out, "{line}");
+    };
+    serve_loop(
+        listener,
+        &store.current_dir(),
+        &config,
+        &stop,
+        &mut serve_log,
+    );
+    EXIT_OK
+}
+
+const USAGE: &str = "usage: avmesh <status|snapshot|promote|demote|token|serve> [flags]\n  status [--status-json FILE] [--allow KEY]... [--tailnet NAME]\n  snapshot create --data-dir D --db-export F --secrets-dir D --env-file F [--node-id KEY] [--vault ID] [--revision N] [--ciphertext-hash H] [--bucket ID:REV:HASH]... [--node-local-secret NAME]... [--at UNIX]\n  snapshot verify --snapshot DIR\n  snapshot list --data-dir D\n  promote --data-dir D --confirm-primary-down\n  demote --data-dir D\n  token init --data-dir D\n  serve --data-dir D [--listen 127.0.0.1:PORT] [--allow KEY]...";
 
 /// Run the CLI with the production peer source. Returns an exit code.
 pub fn run(args: &[String], out: &mut dyn Write) -> i32 {
@@ -558,6 +678,13 @@ pub fn run_with_source(
         },
         "demote" => match parse_flags(&args[1..]) {
             Ok(flags) => cmd_demote(&flags, out),
+            Err(e) => {
+                let _ = writeln!(out, "error: {e}");
+                EXIT_USAGE
+            }
+        },
+        "serve" => match parse_flags(&args[1..]) {
+            Ok(flags) => cmd_serve(&flags, out),
             Err(e) => {
                 let _ = writeln!(out, "error: {e}");
                 EXIT_USAGE

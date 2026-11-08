@@ -3,11 +3,16 @@
 //! no real `tailscale` CLI. Fixture values are synthetic placeholders
 //! (node-a/node-b, 100.64.0.x, example.ts.net).
 
-use avmesh::cli::{run, run_with_source, EXIT_OK, EXIT_UNAVAILABLE, EXIT_USAGE};
+use avmesh::cli::{run, run_with_source, serve_loop, EXIT_OK, EXIT_UNAVAILABLE, EXIT_USAGE};
 use avmesh::discovery::{FakePeerSource, PeerRecord, PeerSource, PeerState, MESH_TAG};
 use avmesh::snapshot::SnapshotStore;
+use avmesh::transport::ServeConfig;
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 const MARKER_SECRET: &str = "MARKER-SECRET-VALUE-7f3a9";
 const FULL: &str = include_str!("fixtures/status_full.json");
@@ -436,4 +441,94 @@ fn snapshot_create_rejects_node_local_secret_paths() {
     let (code, out) = cli(&args, None);
     assert_eq!(code, EXIT_USAGE);
     assert!(out.contains("--node-local-secret"), "output: {out}");
+}
+
+fn serve_current(data_dir: &Path, src: &Sources) {
+    let snap = cli_create(data_dir, src, 1_700_000_000, 3);
+    let store = SnapshotStore::new(data_dir);
+    let mut log = |_: &str| {};
+    store.stage_from(&snap, &mut log).unwrap();
+    store.promote(&mut log).unwrap();
+}
+
+fn serve_token(data_dir: &Path) -> String {
+    let mut args = a(&["token", "init"]);
+    flag(&mut args, "--data-dir", data_dir);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "token init failed: {out}");
+    fs::read_to_string(data_dir.join("mesh.token"))
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn serve_rejects_non_loopback_listen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let mut args = a(&["serve"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    flag_str(&mut args, "--listen", "0.0.0.0:18080");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE, "output: {out}");
+    assert!(out.contains("--listen"), "output: {out}");
+}
+
+#[test]
+fn serve_missing_token_is_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    serve_current(&data_dir, &src);
+    let mut args = a(&["serve"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE, "output: {out}");
+    assert!(out.contains("error:"), "output: {out}");
+}
+
+#[test]
+fn serve_without_current_snapshot_is_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let token = serve_token(&data_dir);
+    let mut args = a(&["serve"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE, "output: {out}");
+    assert!(out.contains("error:"), "output: {out}");
+    assert!(!out.contains(&token), "output leaked the token: {out}");
+}
+
+#[test]
+fn serve_allow_mismatch_is_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    serve_current(&data_dir, &src);
+    let token = serve_token(&data_dir);
+    let mut args = a(&["serve"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    flag_str(&mut args, "--allow", "nodekey:other-node");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE, "output: {out}");
+    assert!(out.contains("error:"), "output: {out}");
+    assert!(!out.contains(&token), "output leaked the token: {out}");
+}
+
+#[test]
+fn serve_loop_stops_when_flag_is_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let config = ServeConfig::new("test-token", "127.0.0.1");
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_in_thread = Arc::clone(&stop);
+    let dir = tmp.path().to_path_buf();
+    let handle = std::thread::spawn(move || {
+        serve_loop(listener, &dir, &config, &stop_in_thread, &mut |_| {});
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    stop.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
 }
