@@ -451,15 +451,13 @@ fn serve_current(data_dir: &Path, src: &Sources) {
     store.promote(&mut log).unwrap();
 }
 
+/// A fixed test token written straight to the data directory, so these tests do not depend on the
+/// platform's randomness source (`token init` is unix-only; see README, Platform support).
 fn serve_token(data_dir: &Path) -> String {
-    let mut args = a(&["token", "init"]);
-    flag(&mut args, "--data-dir", data_dir);
-    let (code, out) = cli(&args, None);
-    assert_eq!(code, EXIT_OK, "token init failed: {out}");
-    fs::read_to_string(data_dir.join("mesh.token"))
-        .unwrap()
-        .trim()
-        .to_string()
+    let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+    fs::create_dir_all(data_dir).unwrap();
+    fs::write(data_dir.join("mesh.token"), format!("{token}\n")).unwrap();
+    token
 }
 
 #[test]
