@@ -1,0 +1,60 @@
+Two-instance serve/pull drill - full run
+command: AVMESH_BIN=/tmp/integ-main-build/debug/avmesh bash harness/two-instance-drill.sh
+
+== preflight
+ports chosen: 18100 18101 (second port reserved and checked)
+== build
+binary: /tmp/integ-main-build/debug/avmesh
+work area: <tmpdir>
+== fixtures
+== instance A: token, snapshot, promote
+token written to <tmpdir>/a/store/mesh.token (contents not shown; copy it to the other nodes out of band)
+snapshot: database export 21 bytes
+snapshot: secrets directory 57 bytes (contents never logged)
+snapshot: environment file 37 bytes
+snapshot: payload/database/db-export.sql sha256 840d29ae06ed5a3bcce8a10f5c16f700b9bffbe00fc4f3c3c991aeb88c8759ef
+snapshot: payload/environment/instance.env sha256 b8e40056b64a671d154fc062f03d1131fab75c2f9b1cf9bbcc156780473e4fea
+snapshot: payload/secrets/jwt-key.txt sha256 07687e3790a092bd04ae495699979572afdfa0a9b2fbef1563caf420aed140fc
+snapshot: payload/secrets/marker.txt sha256 bc07356c2b6531e593bc3ff4e0c9dec17417a8c0932da7f58f9c76a4a3a66e99
+snapshot: verified 4 payload files
+snapshot: created and verified
+snapshot created at <tmpdir>/a/snapshots/snap-1700000000
+snapshot: verified 4 payload files
+snapshot: promoted staging to current; previous snapshot retained
+promoted: vaults=v1@r3
+snapshot: verified 4 payload files
+vault v1 revision 3
+snapshot ok
+A current snapshot verified
+== instance B: token copy
+== serve on A
+serve running: pid 60771 on 127.0.0.1:18100
+== pull into B
+transport: fetched payload/database/db-export.sql (21 bytes)
+transport: fetched payload/environment/instance.env (37 bytes)
+transport: fetched payload/secrets/jwt-key.txt (22 bytes)
+transport: fetched payload/secrets/marker.txt (35 bytes)
+snapshot: verified 4 payload files
+snapshot: staged and verified
+pulled snapshot from node node-a-key (1 vaults) into <tmpdir>/b/staging
+snapshot: verified 4 payload files
+vault v1 revision 3
+snapshot ok
+marker payload matches between A and B
+== negative control: wrong token is refused
+error: http transport error: unexpected status 401 for manifest.json
+wrong-token pull refused as expected
+== teardown checks
+check: serve process stopped: ok
+check: port 18100 free: ok
+check: port 18101 free: ok
+check: work area removed: ok
+drill result: ok
+exit code: 0
+
+Refusal behaviour - a chosen port is already in use
+command: AVMESH_PORT_A=18222 AVMESH_PORT_B=18223 AVMESH_BIN=/tmp/integ-main-build/debug/avmesh bash harness/two-instance-drill.sh
+
+== preflight
+error: port 18222 is already in use; refusing to run
+exit code: 1
