@@ -1,0 +1,16 @@
+# Drill 1 — promote (replicate A -> B) 2026-11-08T13:08:27+0700
+OK fresh-a up
+OK seed-a fake-account ok items=1 readback=1
+OK snapshot-db pg_dump bytes=99455 errors=0
+snapshot-secrets names: data_protection_cert_pass jwt_key postgres_password 
+OK snapshot-env compose env names: FORCE_HTTPS_REDIRECT PUBLIC_REGISTRATION_ENABLED TZ 
+OK fresh-b up
+OK stop-b
+OK apply-db helper restore errors=0
+OK secrets-apply replicated: jwt_key data_protection_cert_pass
+OK secrets-apply postgres_password node-local (not applied, B unchanged)
+OK start-b
+OK api-b GET /api 200 OK
+OK db-b connect (authfail=0, schema up-to-date)
+OK readback-b fake-account verify ok items=1 readback=1 (A credential read on promoted B)
+RESULT promote OK

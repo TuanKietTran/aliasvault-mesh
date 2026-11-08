@@ -1,0 +1,17 @@
+{
+  "BackendState": "Running",
+  "Health": ["Tailscale is starting"],
+  "Self": {
+    "PublicKey": "nodekey:aaaa-self",
+    "HostName": "node-a",
+    "Tags": ["tag:aliasvault-mesh"],
+    "Online": true
+  },
+  "Peer": {
+    "nodekey:bbbb-peer": {
+      "PublicKey": "nodekey:bbbb-peer",
+      "HostName": "node-b",
+      "Tags": ["tag:aliasvault-mesh"]
+    }
+  }
+}

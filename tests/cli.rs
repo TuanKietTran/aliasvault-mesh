@@ -1,0 +1,424 @@
+//! CLI tests (T4): exact output and exit codes via an injected fake
+//! peer source and temp directories only — no tailnet, no real data,
+//! no real `tailscale` CLI. Fixture values are synthetic placeholders
+//! (node-a/node-b, 100.64.0.x, example.ts.net).
+
+use avmesh::cli::{run, run_with_source, EXIT_OK, EXIT_UNAVAILABLE, EXIT_USAGE};
+use avmesh::discovery::{FakePeerSource, PeerRecord, PeerSource, PeerState, MESH_TAG};
+use avmesh::snapshot::SnapshotStore;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const MARKER_SECRET: &str = "MARKER-SECRET-VALUE-7f3a9";
+const FULL: &str = include_str!("fixtures/status_full.json");
+const NEEDS_LOGIN: &str = include_str!("fixtures/status_needs_login.json");
+
+fn a(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+fn cli(args: &[String], source: Option<&dyn PeerSource>) -> (i32, String) {
+    let mut out: Vec<u8> = Vec::new();
+    let code = run_with_source(args, source, &mut out);
+    (code, String::from_utf8(out).unwrap())
+}
+
+fn flag(args: &mut Vec<String>, name: &str, value: &Path) {
+    args.push(name.to_string());
+    args.push(value.display().to_string());
+}
+
+fn flag_str(args: &mut Vec<String>, name: &str, value: &str) {
+    args.push(name.to_string());
+    args.push(value.to_string());
+}
+
+fn record(key: &str, state: PeerState, dns: Option<&str>, ips: &[&str]) -> PeerRecord {
+    PeerRecord {
+        public_key: key.into(),
+        id: None,
+        host_name: None,
+        dns_name: dns.map(|d| d.to_string()),
+        tailscale_ips: ips.iter().map(|s| s.to_string()).collect(),
+        tags: vec![MESH_TAG.into()],
+        state,
+        last_seen: None,
+    }
+}
+
+#[test]
+fn token_init_creates_private_token_file_and_never_prints_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("agent-data");
+    let args = a(&["token", "init", "--data-dir", data_dir.to_str().unwrap()]);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "output: {out}");
+    let token_file = data_dir.join("mesh.token");
+    let contents = fs::read_to_string(&token_file).unwrap();
+    let token = contents.trim();
+    assert_eq!(token.len(), 64, "token must be 32 bytes hex");
+    assert!(token
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+    assert!(!out.contains(token), "cli output leaked the token: {out}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&token_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "token file mode: {mode:o}");
+    }
+    let (code2, _) = cli(&args, None);
+    assert_eq!(
+        code2, EXIT_UNAVAILABLE,
+        "second init must refuse to overwrite"
+    );
+    assert_eq!(fs::read_to_string(&token_file).unwrap(), contents);
+}
+
+#[test]
+fn no_args_shows_usage() {
+    let mut out: Vec<u8> = Vec::new();
+    let code = run(&[], &mut out);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(String::from_utf8(out).unwrap().contains("usage: avmesh"));
+}
+
+#[test]
+fn unknown_command_is_usage_error() {
+    let (code, out) = cli(&a(&["frobnicate"]), None);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(out.contains("usage: avmesh"));
+}
+
+#[test]
+fn version_prints_crate_version() {
+    let (code, out) = cli(&a(&["version"]), None);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.starts_with("avmesh "));
+}
+
+#[test]
+fn status_reports_each_peer_cause() {
+    let source = FakePeerSource::new(vec![
+        record(
+            "nodekey:bbbb-peer",
+            PeerState::Online,
+            Some("node-b.example.ts.net."),
+            &["100.64.0.2"],
+        ),
+        record(
+            "nodekey:cccc-peer",
+            PeerState::Offline,
+            Some("node-c.example.ts.net."),
+            &["100.64.0.3"],
+        ),
+        record("nodekey:dddd-peer", PeerState::AclBlocked, None, &[]),
+        record("nodekey:eeee-peer", PeerState::Online, None, &[]),
+    ]);
+    let (code, out) = cli(&a(&["status"]), Some(&source));
+    assert_eq!(code, EXIT_OK);
+    assert!(out.contains("tailnet: running"));
+    assert!(out.contains("cause=ok"));
+    assert!(out.contains("cause=offline"));
+    assert!(out.contains("cause=acl"));
+    assert!(out.contains("cause=endpoint"));
+    assert!(out.contains("peers: 4"));
+}
+
+#[test]
+fn status_json_parses_fixture_and_flags_unapproved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let status_file = tmp.path().join("status.json");
+    fs::write(&status_file, FULL).unwrap();
+    let mut args = a(&["status"]);
+    flag(&mut args, "--status-json", &status_file);
+    flag_str(&mut args, "--allow", "nodekey:bbbb-peer");
+    flag_str(&mut args, "--allow", "nodekey:cccc-peer");
+    flag_str(&mut args, "--tailnet", "example.ts.net");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.contains("nodekey:bbbb-peer"));
+    assert!(out.contains("nodekey:eeee-stranger - cause=identity"));
+    assert!(out.contains("peers: 2 unapproved: 1"));
+}
+
+#[test]
+fn status_json_missing_file_is_tailnet_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut args = a(&["status"]);
+    flag(&mut args, "--status-json", &tmp.path().join("absent.json"));
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("tailnet: down cause=tailnet_down"));
+}
+
+#[test]
+fn status_json_backend_not_running_is_tailnet_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let status_file = tmp.path().join("status.json");
+    fs::write(&status_file, NEEDS_LOGIN).unwrap();
+    let mut args = a(&["status"]);
+    flag(&mut args, "--status-json", &status_file);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("cause=tailnet_down"));
+    assert!(out.contains("NeedsLogin"));
+}
+
+struct Sources {
+    db: PathBuf,
+    secrets: PathBuf,
+    env_file: PathBuf,
+}
+
+fn write_sources(base: &Path) -> Sources {
+    let db = base.join("db-export.sql");
+    fs::write(&db, "fake database export").unwrap();
+    let secrets = base.join("secrets");
+    fs::create_dir_all(&secrets).unwrap();
+    fs::write(secrets.join("jwt-key.txt"), MARKER_SECRET).unwrap();
+    let env_file = base.join("instance.env");
+    fs::write(&env_file, "PRIVATE_EMAIL_DOMAINS=example.ts.net\n").unwrap();
+    Sources {
+        db,
+        secrets,
+        env_file,
+    }
+}
+
+fn cli_create(data_dir: &Path, src: &Sources, at: u64, revision: u64) -> PathBuf {
+    let mut args = a(&["snapshot", "create"]);
+    flag(&mut args, "--data-dir", data_dir);
+    flag(&mut args, "--db-export", &src.db);
+    flag(&mut args, "--secrets-dir", &src.secrets);
+    flag(&mut args, "--env-file", &src.env_file);
+    flag_str(&mut args, "--at", &at.to_string());
+    flag_str(&mut args, "--revision", &revision.to_string());
+    // The manifest hash is bound to the payload: it is the fingerprint
+    // of the actual db export, never an invented string.
+    let hash = avmesh::snapshot::fingerprint(&fs::read(&src.db).unwrap());
+    flag_str(&mut args, "--ciphertext-hash", &hash);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "create failed: {out}");
+    assert!(out.contains("snapshot created at"));
+    assert!(!out.contains(MARKER_SECRET));
+    data_dir.join("snapshots").join(format!("snap-{at}"))
+}
+
+fn cli_verify(dir: &Path) -> (i32, String) {
+    let mut args = a(&["snapshot", "verify"]);
+    flag(&mut args, "--snapshot", dir);
+    cli(&args, None)
+}
+
+fn cli_list(data_dir: &Path) -> (i32, String) {
+    let mut args = a(&["snapshot", "list"]);
+    flag(&mut args, "--data-dir", data_dir);
+    cli(&args, None)
+}
+
+fn stage(data_dir: &Path, snapshot_dir: &Path) {
+    let store = SnapshotStore::new(data_dir.join("store"));
+    let mut log = |_: &str| {};
+    store.stage_from(snapshot_dir, &mut log).unwrap();
+}
+
+fn cli_promote(data_dir: &Path, confirm: bool) -> (i32, String) {
+    let mut args = a(&["promote"]);
+    flag(&mut args, "--data-dir", data_dir);
+    if confirm {
+        args.push("--confirm-primary-down".to_string());
+    }
+    cli(&args, None)
+}
+
+fn current_line(data_dir: &Path) -> String {
+    let (code, out) = cli_list(data_dir);
+    assert_eq!(code, EXIT_OK);
+    out.lines()
+        .find(|l| l.starts_with("current:"))
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn snapshot_create_verify_list_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let dest = cli_create(&data_dir, &src, 1_700_000_000, 3);
+    assert!(dest.is_dir());
+    let (code, out) = cli_verify(&dest);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.contains("vault v1 revision 3"));
+    assert!(out.contains("snapshot ok"));
+    let (code, out) = cli_list(&data_dir);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.contains("current: none"));
+    assert!(out.contains("snapshot:"));
+    assert!(out.contains("v1@r3"));
+}
+
+#[test]
+fn snapshot_create_without_ciphertext_hash_computes_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let mut args = a(&["snapshot", "create"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    flag(&mut args, "--db-export", &src.db);
+    flag(&mut args, "--secrets-dir", &src.secrets);
+    flag(&mut args, "--env-file", &src.env_file);
+    flag_str(&mut args, "--at", "1700000000");
+    flag_str(&mut args, "--revision", "3");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "create failed: {out}");
+    let dest = data_dir.join("snapshots").join("snap-1700000000");
+    let manifest_text = fs::read_to_string(dest.join("manifest.json")).unwrap();
+    let expected = avmesh::snapshot::fingerprint(b"fake database export");
+    assert!(
+        manifest_text.contains(&expected),
+        "manifest does not carry the computed hash: {manifest_text}"
+    );
+    assert!(!manifest_text.contains("\"ciphertext_hash\": \"\""));
+    let (code, out) = cli_verify(&dest);
+    assert_eq!(code, EXIT_OK, "verify failed: {out}");
+}
+
+#[test]
+fn snapshot_create_requires_source_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut args = a(&["snapshot", "create"]);
+    flag(&mut args, "--data-dir", &tmp.path().join("data"));
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(out.contains("--db-export"));
+}
+
+#[test]
+fn snapshot_verify_rejects_empty_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (code, out) = cli_verify(tmp.path());
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("error:"));
+}
+
+#[test]
+fn promote_requires_confirmation_then_promotes_staged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let snap = cli_create(&data_dir, &src, 1_700_000_000, 3);
+    stage(&data_dir, &snap);
+    let (code, out) = cli_promote(&data_dir, false);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(out.contains("--confirm-primary-down"));
+    let (code, out) = cli_promote(&data_dir, true);
+    assert_eq!(code, EXIT_OK, "promote failed: {out}");
+    assert!(out.contains("promoted: vaults=v1@r3"));
+    assert!(current_line(&data_dir).contains("v1@r3"));
+}
+
+#[test]
+fn promote_without_staging_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (code, out) = cli_promote(&tmp.path().join("data"), true);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("error:"));
+}
+
+#[test]
+fn demote_swaps_current_and_previous_and_fails_without_previous() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let mut args = a(&["demote"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("nothing to demote"));
+    let snap3 = cli_create(&data_dir, &src, 1_700_000_000, 3);
+    stage(&data_dir, &snap3);
+    assert_eq!(cli_promote(&data_dir, true).0, EXIT_OK);
+    let snap4 = cli_create(&data_dir, &src, 1_700_000_100, 4);
+    stage(&data_dir, &snap4);
+    assert_eq!(cli_promote(&data_dir, true).0, EXIT_OK);
+    assert!(current_line(&data_dir).contains("v1@r4"));
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.contains("demoted:"));
+    assert!(current_line(&data_dir).contains("v1@r3"));
+    let (code, _) = cli(&args, None);
+    assert_eq!(code, EXIT_OK);
+    assert!(current_line(&data_dir).contains("v1@r4"));
+}
+
+#[test]
+fn promote_forked_staged_snapshot_halts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let snap_a = cli_create(&data_dir, &src, 1_700_000_000, 3);
+    stage(&data_dir, &snap_a);
+    assert_eq!(cli_promote(&data_dir, true).0, EXIT_OK);
+    // Same revision, different vault ciphertext: a genuinely different
+    // db export, so its computed ciphertext_hash differs (a fork).
+    let base_b = tmp.path().join("src-b");
+    fs::create_dir_all(&base_b).unwrap();
+    let src_b = write_sources(&base_b);
+    fs::write(&src_b.db, "fake database export (forked)").unwrap();
+    let snap_b = cli_create(&data_dir, &src_b, 1_700_000_100, 3);
+    stage(&data_dir, &snap_b);
+    let (code, out) = cli_promote(&data_dir, true);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(out.contains("forked"));
+    assert!(current_line(&data_dir).contains("v1@r3"));
+}
+
+#[test]
+fn snapshot_create_excludes_node_local_secrets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    fs::write(src.secrets.join("postgres_password"), "node-local-pg-pw").unwrap();
+    fs::write(src.secrets.join("jwt_key"), "jwt-signing-material").unwrap();
+    fs::write(src.secrets.join("local_only.txt"), "stay-here").unwrap();
+    let data_dir = tmp.path().join("data");
+    // Default: postgres_password is node-local (ADR decision C) and is
+    // never replicated; jwt_key is replicated.
+    let dest = cli_create(&data_dir, &src, 1_700_000_000, 3);
+    assert!(dest.join("payload/secrets/jwt_key").is_file());
+    assert!(!dest.join("payload/secrets/postgres_password").exists());
+    // Configured extra: --node-local-secret adds to the default set.
+    let mut args = a(&["snapshot", "create"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    flag(&mut args, "--db-export", &src.db);
+    flag(&mut args, "--secrets-dir", &src.secrets);
+    flag(&mut args, "--env-file", &src.env_file);
+    flag_str(&mut args, "--at", "1700000500");
+    flag_str(&mut args, "--revision", "3");
+    let hash = avmesh::snapshot::fingerprint(&fs::read(&src.db).unwrap());
+    flag_str(&mut args, "--ciphertext-hash", &hash);
+    flag_str(&mut args, "--node-local-secret", "local_only.txt");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_OK, "create failed: {out}");
+    let dest2 = data_dir.join("snapshots").join("snap-1700000500");
+    assert!(!dest2.join("payload/secrets/local_only.txt").exists());
+    assert!(!dest2.join("payload/secrets/postgres_password").exists());
+    assert!(dest2.join("payload/secrets/jwt_key").is_file());
+}
+
+#[test]
+fn snapshot_create_rejects_node_local_secret_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = write_sources(tmp.path());
+    let data_dir = tmp.path().join("data");
+    let mut args = a(&["snapshot", "create"]);
+    flag(&mut args, "--data-dir", &data_dir);
+    flag(&mut args, "--db-export", &src.db);
+    flag(&mut args, "--secrets-dir", &src.secrets);
+    flag(&mut args, "--env-file", &src.env_file);
+    flag_str(&mut args, "--node-local-secret", "../evil");
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(out.contains("--node-local-secret"), "output: {out}");
+}

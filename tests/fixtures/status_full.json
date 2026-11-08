@@ -1,0 +1,60 @@
+{
+  "Version": "1.90.0",
+  "BackendState": "Running",
+  "MagicDNSSuffix": "example.ts.net",
+  "CurrentTailnet": { "Name": "example.ts.net", "MagicDNSSuffix": "example.ts.net", "MagicDNSEnabled": true },
+  "Health": [],
+  "Self": {
+    "ID": 1001,
+    "PublicKey": "nodekey:aaaa-self",
+    "HostName": "node-a",
+    "DNSName": "node-a.example.ts.net.",
+    "OS": "macOS",
+    "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
+    "Tags": ["tag:aliasvault-mesh"],
+    "Online": true,
+    "LastSeen": "2026-11-08T00:00:00Z",
+    "SomeFutureField": { "nested": true }
+  },
+  "Peer": {
+    "nodekey:bbbb-peer": {
+      "ID": 1002,
+      "PublicKey": "nodekey:bbbb-peer",
+      "HostName": "node-b",
+      "DNSName": "node-b.example.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": ["100.64.0.2"],
+      "Tags": ["tag:aliasvault-mesh"],
+      "Online": true,
+      "LastSeen": "2026-11-08T00:00:00Z",
+      "UnknownPeerField": 42
+    },
+    "nodekey:cccc-peer": {
+      "ID": "1003",
+      "PublicKey": "nodekey:cccc-peer",
+      "HostName": "node-c",
+      "DNSName": "node-c.example.ts.net.",
+      "TailscaleIPs": ["100.64.0.3"],
+      "Tags": ["tag:aliasvault-mesh"],
+      "Online": false,
+      "LastSeen": "2026-11-07T22:00:00Z"
+    },
+    "nodekey:dddd-untagged": {
+      "ID": 1004,
+      "PublicKey": "nodekey:dddd-untagged",
+      "HostName": "laptop",
+      "DNSName": "laptop.example.ts.net.",
+      "TailscaleIPs": ["100.64.0.4"],
+      "Online": true
+    },
+    "nodekey:eeee-stranger": {
+      "ID": 1005,
+      "PublicKey": "nodekey:eeee-stranger",
+      "HostName": "node-e",
+      "DNSName": "node-e.example.ts.net.",
+      "TailscaleIPs": ["100.64.0.5"],
+      "Tags": ["tag:aliasvault-mesh"],
+      "Online": true
+    }
+  }
+}

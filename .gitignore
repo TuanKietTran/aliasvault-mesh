@@ -1,0 +1,8 @@
+target/
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
+data/
+secrets/

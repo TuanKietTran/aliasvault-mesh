@@ -1,0 +1,8 @@
+# Drill 3 — fork (both accept a write, compare manifests) 2026-11-08T13:09:54+0700
+OK restart-a (old primary back, pre-fork state)
+OK fork-baseline manifests equal (count/rev/creds A=1/2/1 B=1/2/1)
+OK write-a add credential (Fork Service A) ok items=1 readback=1
+OK write-b add credential (Fork Service B) ok items=1 readback=1
+manifests after writes (count/revision/credentials): A=1/3/2 B=1/3/2
+OK fork-detected manifests diverged after independent writes
+RESULT fork OK

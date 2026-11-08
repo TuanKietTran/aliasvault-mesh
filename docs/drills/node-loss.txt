@@ -1,0 +1,5 @@
+# Drill 2 — node-loss (stop A, B promoted) 2026-11-08T13:09:41+0700
+OK stop-a (A container not running)
+OK api-b GET /api 200 OK with A down
+OK readback-b with A down ok items=1 readback=1
+RESULT node-loss OK

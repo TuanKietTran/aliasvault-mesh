@@ -1,0 +1,29 @@
+# CI actions are referenced by major version tag (for example @v4),
+# not by full commit SHA: no SHA was verified for these actions
+# when this workflow was written. That choice is recorded here and
+# must be carried into docs/DEPENDENCIES.md when that file lands.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt, clippy, test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
