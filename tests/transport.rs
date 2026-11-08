@@ -492,6 +492,8 @@ fn constant_time_eq_compares_without_length_leak_semantics() {
     assert!(constant_time_eq(b"", b""));
 }
 
+// Token generation needs an OS randomness source that is wired up on unix only (see README, Platform support).
+#[cfg(unix)]
 #[test]
 fn token_init_writes_0600_hex_token_and_refuses_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
