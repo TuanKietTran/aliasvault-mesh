@@ -1,4 +1,4 @@
-//! The `avmesh` command line (T4).
+//! The `avmesh` command line.
 //!
 //! Commands: `status`, `snapshot create|verify|list`, `promote`,
 //! `demote`. The module is written against the `PeerSource` trait and

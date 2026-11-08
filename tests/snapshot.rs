@@ -1,4 +1,4 @@
-//! Filesystem tests for snapshot packaging (T2): temp dirs only, fake
+//! Filesystem tests for snapshot packaging: temp dirs only, fake
 //! data only, no tailnet, no real vault data.
 
 use avmesh::manifest::{SnapshotManifest, VaultState};

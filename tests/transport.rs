@@ -1,4 +1,4 @@
-//! Transport tests (T5): local-directory and loopback HTTP only.
+//! Transport tests: local-directory and loopback HTTP only.
 //! No test calls tailscale or any other machine; the HTTP server
 //! binds 127.0.0.1:0 in a thread and serves a fixed request count.
 
@@ -6,9 +6,11 @@ use avmesh::discovery::{PeerRecord, PeerState};
 use avmesh::manifest::{SnapshotManifest, VaultState};
 use avmesh::snapshot::{create_snapshot, SnapshotSources, SnapshotStore};
 use avmesh::transport::{
-    constant_time_eq, init_token, pull_snapshot, serve_once, token_path, HttpTransport,
-    LocalDirTransport, ServeConfig, Transport, TransportError,
+    constant_time_eq, pull_snapshot, serve_once, HttpTransport, LocalDirTransport, ServeConfig,
+    Transport, TransportError,
 };
+#[cfg(unix)]
+use avmesh::transport::{init_token, token_path};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -532,7 +534,7 @@ fn http_base_url_must_be_plain_http() {
 #[test]
 fn http_base_url_must_be_loopback() {
     // Non-loopback hosts are rejected: with_auth would otherwise send
-    // the per-mesh bearer token in cleartext off-machine (T6a).
+    // the per-mesh bearer token in cleartext off-machine.
     for base in [
         "http://example.com:80",
         "http://100.64.0.2:18080",

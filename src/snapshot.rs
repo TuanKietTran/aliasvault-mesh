@@ -261,7 +261,7 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Reject any symlink inside the snapshot payload at `root` (T7a):
+/// Reject any symlink inside the snapshot payload at `root`:
 /// a symlinked payload entry would make verify/stage follow it and
 /// materialise content from outside the snapshot. Uses
 /// `symlink_metadata` throughout, never follows a link, and the
@@ -321,7 +321,7 @@ fn write_checksums(root: &Path, checksums: &BTreeMap<String, String>) -> Result<
     set_mode(&file, 0o600)
 }
 
-/// Validate one entry path from `checksums.sha256` (T7b): it must
+/// Validate one entry path from `checksums.sha256`: it must
 /// be a relative path of normal components only, so a crafted
 /// checksums file can never make verify read outside the snapshot
 /// directory. Rejects `..`, absolute paths, empty and `.`

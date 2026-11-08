@@ -15,7 +15,7 @@
 //! key, because a reachable port is never proof of identity. Files
 //! land in a scratch directory first and are staged only when every
 //! file listed in `checksums.sha256` has arrived; staging verifies
-//! checksums and manifest (T2), so a partial or corrupted transfer
+//! checksums and manifest, so a partial or corrupted transfer
 //! is never promoted. Log lines carry paths and byte counts only,
 //! never file contents.
 
@@ -81,10 +81,10 @@ pub type Result<T> = std::result::Result<T, TransportError>;
 pub const TOKEN_FILE: &str = "mesh.token";
 
 /// Default read timeout for an accepted serve connection: a client
-/// that stalls mid-request cannot hold the listener (T5b).
+/// that stalls mid-request cannot hold the listener.
 pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default overall request deadline for `serve_once` (T6c):
+/// Default overall request deadline for `serve_once`:
 /// bounds the whole request read from accept, so a client
 /// dripping bytes below the per-read timeout cannot hold the
 /// connection indefinitely.
@@ -93,19 +93,19 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Hard cap on request-header bytes read by `serve_once`.
 pub const MAX_HEADER_BYTES: usize = 16384;
 
-/// Default connect timeout for `HttpTransport::fetch_bytes` (T6b).
+/// Default connect timeout for `HttpTransport::fetch_bytes`.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Default per-read timeout for `HttpTransport::fetch_bytes` (T6b).
+/// Default per-read timeout for `HttpTransport::fetch_bytes`.
 pub const DEFAULT_FETCH_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default overall deadline for one `HttpTransport::fetch_bytes`
-/// call (T6b): per-read timeouts alone let a server that drips
+/// call: per-read timeouts alone let a server that drips
 /// bytes reset the clock forever, so the whole fetch is bounded.
 pub const DEFAULT_FETCH_OVERALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default response-body size cap for `HttpTransport::fetch_bytes`
-/// (T6b): 512 MiB.
+///: 512 MiB.
 pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 512 * 1024 * 1024;
 
 /// Path of the token file inside an agent data directory.
@@ -204,11 +204,11 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     acc == 0
 }
 
-/// Serving policy for `serve_once` (T5b): the bearer token a request
+/// Serving policy for `serve_once`: the bearer token a request
 /// must present, the exact Host header it must carry (the configured
 /// serve name; an optional `:port` suffix on the wire is ignored),
 /// the per-read timeout applied to the accepted stream, and the
-/// overall request deadline bounding the whole request read (T6c).
+/// overall request deadline bounding the whole request read.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
     token: String,
@@ -296,7 +296,7 @@ pub fn pull_snapshot<T: Transport>(
         fs::remove_dir_all(&incoming)?;
     }
     // Received files land owner-only in `incoming/` and the directory
-    // is removed on every failure path (T7c): a failed verify must
+    // is removed on every failure path: a failed verify must
     // not leave the received payload on disk at default modes.
     let staged = stage_incoming(
         transport,
@@ -410,7 +410,7 @@ impl Transport for LocalDirTransport {
 /// `http://127.0.0.1:18080` — the port `tailscale serve` forwards to
 /// on the serving node (tailnet.md section 4). An `https://` base is
 /// rejected: TLS is Serve's layer, never the agent's. A non-loopback
-/// host is rejected too (T6a): the bearer token must never be sent
+/// host is rejected too: the bearer token must never be sent
 /// off-machine.
 #[derive(Debug, Clone)]
 pub struct HttpTransport {
@@ -443,7 +443,7 @@ impl HttpTransport {
         let port: u16 = port
             .parse()
             .map_err(|_| TransportError::Http(format!("base url has bad port: {base}")))?;
-        // Loopback only (T6a). The bracketed form `[::1]` unwraps to
+        // Loopback only. The bracketed form `[::1]` unwraps to
         // `::1`; lookalikes (127.0.0.2, localhost.evil, tailnet or LAN
         // addresses) never match the exact allowlist.
         let host = host
@@ -469,7 +469,7 @@ impl HttpTransport {
         })
     }
 
-    /// Attach the per-mesh bearer token (T5b): every fetch sends
+    /// Attach the per-mesh bearer token: every fetch sends
     /// `Authorization: Bearer <token>` and uses `serve_host` — the
     /// configured serve name the server requires — as the Host
     /// header instead of the loopback dial target.
@@ -480,7 +480,7 @@ impl HttpTransport {
     }
 
     /// Override the fetch connect timeout, per-read timeout and
-    /// overall fetch deadline (T6b; defaults are
+    /// overall fetch deadline (defaults are
     /// `DEFAULT_CONNECT_TIMEOUT`, `DEFAULT_FETCH_READ_TIMEOUT` and
     /// `DEFAULT_FETCH_OVERALL_TIMEOUT`).
     pub fn with_timeouts(
@@ -495,7 +495,7 @@ impl HttpTransport {
         self
     }
 
-    /// Override the response-body size cap (T6b; default
+    /// Override the response-body size cap (default
     /// `DEFAULT_MAX_RESPONSE_BYTES`).
     pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
         self.max_response_bytes = max_response_bytes;

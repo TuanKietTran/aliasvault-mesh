@@ -1,4 +1,4 @@
-//! CLI tests (T4): exact output and exit codes via an injected fake
+//! CLI tests: exact output and exit codes via an injected fake
 //! peer source and temp directories only — no tailnet, no real data,
 //! no real `tailscale` CLI. Fixture values are synthetic placeholders
 //! (node-a/node-b, 100.64.0.x, example.ts.net).

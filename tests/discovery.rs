@@ -1,4 +1,4 @@
-//! Discovery tests (T3): synthetic fixtures only — placeholders
+//! Discovery tests: synthetic fixtures only — placeholders
 //! node-a/node-b, 100.64.0.x, example.ts.net. No test runs the real
 //! `tailscale` CLI or touches a real tailnet.
 
