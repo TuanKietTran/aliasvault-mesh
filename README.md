@@ -42,6 +42,10 @@ Placeholder values only — replace every placeholder with your own before use.
 
 Until the procedures in the runbooks are marked verified, treat every command in them as a draft: the runbooks say so per command.
 
+## Platform support
+
+The agent supports Linux and macOS. On Windows, run it inside a WSL2 distribution (the AliasVault containers run there anyway; see ADR 0001, section E). A native Windows build compiles and passes its unit tests, but it cannot generate the mesh token (provision `mesh.token` out of band) and it does not enforce owner-only file permissions, so do not run it natively on a machine that holds a real instance.
+
 ## Status
 
 Design accepted (ADR 0001, with amendments). MVP in progress: two nodes, the all-in-one upstream deployment shape, one primary and one standby, snapshot replication, fork detection, and manual promotion and demotion. Automatic failover, multi-writer sync, more than two nodes, and other upstream deployment shapes are out of scope.

@@ -46,6 +46,7 @@ fn record(key: &str, state: PeerState, dns: Option<&str>, ips: &[&str]) -> PeerR
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn token_init_creates_private_token_file_and_never_prints_it() {
     let tmp = tempfile::tempdir().unwrap();
@@ -73,6 +74,20 @@ fn token_init_creates_private_token_file_and_never_prints_it() {
         "second init must refuse to overwrite"
     );
     assert_eq!(fs::read_to_string(&token_file).unwrap(), contents);
+}
+
+#[cfg(windows)]
+#[test]
+fn token_init_refuses_clearly_where_there_is_no_randomness_source() {
+    // No OS randomness source is wired up on this platform: the command must fail loudly, say how to
+    // provision the token instead, and leave no token file behind.
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("agent-data");
+    let args = a(&["token", "init", "--data-dir", data_dir.to_str().unwrap()]);
+    let (code, out) = cli(&args, None);
+    assert_eq!(code, EXIT_UNAVAILABLE, "output: {out}");
+    assert!(out.contains("out of band"), "output: {out}");
+    assert!(!data_dir.join("mesh.token").exists());
 }
 
 #[test]
