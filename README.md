@@ -36,11 +36,37 @@ Placeholder values only — replace every placeholder with your own before use.
 
 1. Install an unmodified upstream AliasVault instance on `node-a` and on `node-b`, each with its own data directory. Follow `docs/runbooks/setup.md`.
 2. Join both machines to the same tailnet, for example `example.ts.net`, and note their tailnet addresses, for example `100.64.0.1` for `node-a`.
-3. Install the mesh agent beside AliasVault on both machines, configure `node-a` as the primary and `node-b` as a standby, and allowlist each peer by its node key.
+3. Install the mesh agent beside AliasVault on both machines.
 4. Take a manual whole-instance backup before any real use: `docs/runbooks/backup-before-real-use.md`.
-5. Start the agent on both machines and confirm that a snapshot taken on `node-a` arrives on `node-b`, verifies, and passes the standby start test.
+5. Replicate a first snapshot from `node-a` (the primary) to `node-b` (the standby). This flow is verified: it is the exact sequence exercised end to end by the two-instance drill — token init, snapshot create, promote, snapshot verify, serve, pull, and refusal of a pull that presents a wrong token (401).
 
-Until the procedures in the runbooks are marked verified, treat every command in them as a draft: the runbooks say so per command.
+   ```sh
+   # On node-a: create the mesh token in the agent store directory.
+   avmesh token init --data-dir ./node-a/store
+
+   # On node-a: snapshot the instance (database export, secrets directory,
+   # instance env file).
+   avmesh snapshot create --data-dir ./node-a --db-export ./db-export.sql --secrets-dir ./secrets --env-file ./instance.env --node-id node-a-key --vault v1 --revision 1
+
+   # On node-a: stage the created snapshot and promote it to current.
+   cp -R ./node-a/snapshots/snap-<timestamp> ./node-a/store/staging
+   avmesh promote --data-dir ./node-a --confirm-primary-down
+   avmesh snapshot verify --snapshot ./node-a/store/current
+
+   # Copy node-a/store/mesh.token to node-b out of band (never over the
+   # mesh itself); on node-b it sits at ./node-b/mesh.token.
+
+   # On node-a: serve the current snapshot (foreground, its own shell).
+   avmesh serve --data-dir ./node-a/store --listen 127.0.0.1:18100 --allow node-a-key
+
+   # On node-b: pull the snapshot into the standby staging area and verify it.
+   avmesh pull --data-dir ./node-b --from http://127.0.0.1:18100 --allow node-a-key
+   avmesh snapshot verify --snapshot ./node-b/staging
+   ```
+
+   The commands above are the loopback form proven by the drill. On a real tailnet the standby reaches the primary's loopback endpoint through Tailscale Serve; see `docs/runbooks/setup.md`.
+
+Procedures in the runbooks that are not part of this flow are drafts until marked verified: the runbooks say so per command.
 
 ## Platform support
 
